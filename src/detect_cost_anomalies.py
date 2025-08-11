@@ -1,141 +1,128 @@
-#!/usr/bin/env python3
-"""
-Detect GCP cost anomalies from BigQuery billing export and
-optionally post to Slack and create a GitHub issue.
-Env vars:
-  BILLING_TABLE (required) e.g. "project.dataset.table"
-  THRESHOLD_PERCENT (optional, default 30)
-  BASELINE_DAYS (optional, default 7)
-  MIN_ABSOLUTE_INCREASE (optional, default 5.0)  # $ trigger for zero baseline
-  SLACK_WEBHOOK_URL (optional)
-  CREATE_GITHUB_ISSUE (optional, "true" to enable)
-  GITHUB_TOKEN (required to create issue when CREATE_GITHUB_ISSUE=true)
-  GITHUB_REPOSITORY (owner/repo) (optional; Actions sets it as github.repository)
-"""
 import os
 import json
 import logging
+import argparse
 from datetime import datetime, timedelta
-import requests
 from google.cloud import bigquery
+import requests
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-BILLING_TABLE = os.getenv("BILLING_TABLE")
-if not BILLING_TABLE:
-    raise SystemExit("BILLING_TABLE environment variable is required (project.dataset.table)")
-
-THRESHOLD_PERCENT = float(os.getenv("THRESHOLD_PERCENT", "30"))
+# ---------------- CONFIG ----------------
+PROJECT_ID = os.getenv("PROJECT_ID", "my-billing-project")
+DATASET_ID = os.getenv("DATASET_ID", "billing_dataset")
+TABLE_ID = os.getenv("TABLE_ID", "gcp_billing_export_v1_01F182_446702_47B35A")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 BASELINE_DAYS = int(os.getenv("BASELINE_DAYS", "7"))
-MIN_ABSOLUTE_INCREASE = float(os.getenv("MIN_ABSOLUTE_INCREASE", "5.0"))
-SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
-CREATE_ISSUE = os.getenv("CREATE_GITHUB_ISSUE", "false").lower() == "true"
+THRESHOLD_PERCENT = float(os.getenv("THRESHOLD_PERCENT", "50"))
+MIN_ABSOLUTE_INCREASE = float(os.getenv("MIN_ABSOLUTE_INCREASE", "10"))
+CREATE_ISSUE = os.getenv("CREATE_ISSUE", "false").lower() == "true"
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY")  # owner/repo
+# -----------------------------------------
 
-client = bigquery.Client()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 def run_query(yesterday, baseline_days):
-    start_baseline = (yesterday - timedelta(days=baseline_days)).isoformat()
-    y_date = yesterday.isoformat()
-
+    logging.info("Querying BigQuery for %s", yesterday)
+    client = bigquery.Client(project=PROJECT_ID)
     query = f"""
-    WITH baseline AS (
-      SELECT service.description AS service, SUM(cost) AS baseline_total
-      FROM `{BILLING_TABLE}`
-      WHERE DATE(usage_start_time) >= DATE('{start_baseline}')
-        AND DATE(usage_start_time) < DATE('{y_date}')
-      GROUP BY service
-    ),
-    recent AS (
-      SELECT service.description AS service, SUM(cost) AS recent_cost
-      FROM `{BILLING_TABLE}`
-      WHERE DATE(usage_start_time) = DATE('{y_date}')
-      GROUP BY service
-    )
-    SELECT r.service, r.recent_cost, COALESCE(b.baseline_total, 0) AS baseline_total
-    FROM recent r
-    LEFT JOIN baseline b USING(service)
-    ORDER BY r.recent_cost DESC
+        WITH baseline AS (
+          SELECT service.description AS service,
+                 AVG(cost) AS avg_cost
+          FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+          WHERE usage_start_time BETWEEN TIMESTAMP_SUB('{yesterday}', INTERVAL {baseline_days+1} DAY)
+                                     AND TIMESTAMP_SUB('{yesterday}', INTERVAL 1 DAY)
+          GROUP BY service
+        ),
+        recent AS (
+          SELECT service.description AS service,
+                 SUM(cost) AS recent_cost
+          FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+          WHERE usage_start_time BETWEEN '{yesterday}' AND TIMESTAMP_ADD('{yesterday}', INTERVAL 1 DAY)
+          GROUP BY service
+        )
+        SELECT r.service, r.recent_cost, b.avg_cost
+        FROM recent r
+        JOIN baseline b USING(service)
     """
-    logging.info("Running BigQuery query for %s (baseline_days=%d)", y_date, baseline_days)
-    job = client.query(query)
-    return list(job.result())
+    return list(client.query(query).result())
 
-def detect_anomalies(rows, baseline_days, threshold_pct, min_abs):
+def detect_anomalies(rows, baseline_days, threshold_percent, min_absolute_increase):
     anomalies = []
     for row in rows:
-        service = row["service"]
-        recent_cost = float(row["recent_cost"] or 0.0)
-        baseline_total = float(row["baseline_total"] or 0.0)
-        baseline_avg = baseline_total / baseline_days if baseline_days > 0 else 0.0
-
-        if baseline_avg <= 0:
-            # No baseline activity — treat as anomaly if recent exceeds absolute threshold
-            if recent_cost >= min_abs:
-                anomalies.append({
-                    "service": service,
-                    "recent_cost": recent_cost,
-                    "baseline_avg": baseline_avg,
-                    "percent_change": None,
-                    "reason": f"no baseline; recent >= ${min_abs:.2f}"
-                })
-        else:
-            pct_change = (recent_cost - baseline_avg) / baseline_avg * 100.0
-            if pct_change > threshold_pct:
-                anomalies.append({
-                    "service": service,
-                    "recent_cost": recent_cost,
-                    "baseline_avg": baseline_avg,
-                    "percent_change": pct_change,
-                    "reason": f">{threshold_pct}%"
-                })
+        recent_cost = row["recent_cost"] if isinstance(row, dict) else row.recent_cost
+        baseline_avg = row["avg_cost"] if isinstance(row, dict) else row.avg_cost
+        if baseline_avg == 0:
+            continue
+        percent_change = ((recent_cost - baseline_avg) / baseline_avg) * 100
+        if percent_change > threshold_percent and (recent_cost - baseline_avg) > min_absolute_increase:
+            anomalies.append({
+                "service": row["service"] if isinstance(row, dict) else row.service,
+                "recent_cost": recent_cost,
+                "baseline_avg": baseline_avg,
+                "percent_change": percent_change,
+                "reason": "Cost spike detected"
+            })
     return anomalies
 
-def post_to_slack(text):
-    if not SLACK_WEBHOOK:
-        logging.warning("SLACK_WEBHOOK_URL not set — skipping Slack post.")
+def format_message(anomalies, date_str):
+    lines = [f"*Cost anomalies detected for {date_str}:*"]
+    for a in anomalies:
+        lines.append(
+            f"- {a['service']}: ${a['recent_cost']:.2f} (avg: ${a['baseline_avg']:.2f}, change: {a['percent_change']:.1f}%) — {a['reason']}"
+        )
+    return "\n".join(lines)
+
+def post_to_slack(message):
+    if not SLACK_WEBHOOK_URL:
+        logging.warning("No Slack webhook URL configured.")
         return False
-    payload = {"text": text}
     try:
-        r = requests.post(SLACK_WEBHOOK, json=payload, timeout=10)
+        r = requests.post(SLACK_WEBHOOK_URL, json={"text": message})
         r.raise_for_status()
-        logging.info("Slack notification sent.")
+        logging.info("Message posted to Slack.")
         return True
     except Exception as e:
-        logging.error("Failed to send Slack message: %s", e)
+        logging.error(f"Failed to post to Slack: {e}")
         return False
 
 def create_github_issue(title, body):
-    if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
-        logging.warning("GITHUB_TOKEN or GITHUB_REPOSITORY not set — skipping issue creation.")
+    if not GITHUB_REPO or not GITHUB_TOKEN:
+        logging.warning("GitHub repo or token not configured.")
         return False
-    url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/issues"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/issues"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github.v3+json",
     }
     payload = {"title": title, "body": body}
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        r = requests.post(url, headers=headers, data=json.dumps(payload))
         r.raise_for_status()
-        logging.info("GitHub issue created: %s", r.json().get("html_url"))
+        logging.info("GitHub issue created.")
         return True
     except Exception as e:
-        logging.error("Failed to create GitHub issue: %s", e)
+        logging.error(f"Failed to create GitHub issue: {e}")
         return False
 
-def format_message(anomalies, y_date):
-    lines = [f"*GCP Cost Anomalies for {y_date}* — {len(anomalies)} found\n"]
-    for a in anomalies:
-        pct = f"{a['percent_change']:.1f}%" if a['percent_change'] is not None else "N/A"
-        lines.append(f"*Service:* {a['service']}\n  - Recent: ${a['recent_cost']:.2f}\n  - Baseline avg/day: ${a['baseline_avg']:.2f}\n  - Change: {pct}\n  - Note: {a['reason']}\n")
-    return "\n".join(lines)
-
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", action="store_true", help="Send a dummy anomaly for testing without querying BigQuery.")
+    args = parser.parse_args()
+
     yesterday = (datetime.utcnow().date() - timedelta(days=1))
-    rows = run_query(yesterday, BASELINE_DAYS)
-    anomalies = detect_anomalies(rows, BASELINE_DAYS, THRESHOLD_PERCENT, MIN_ABSOLUTE_INCREASE)
+
+    if args.test:
+        logging.info("Running in TEST mode — skipping BigQuery query.")
+        anomalies = [{
+            "service": "Test Service",
+            "recent_cost": 150.00,
+            "baseline_avg": 10.00,
+            "percent_change": 1400.0,
+            "reason": "Test anomaly"
+        }]
+    else:
+        rows = run_query(yesterday, BASELINE_DAYS)
+        anomalies = detect_anomalies(rows, BASELINE_DAYS, THRESHOLD_PERCENT, MIN_ABSOLUTE_INCREASE)
 
     if not anomalies:
         logging.info("No anomalies detected for %s", yesterday.isoformat())
