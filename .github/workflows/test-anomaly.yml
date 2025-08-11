@@ -6,6 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      BILLING_TABLE: 'github-actions-111.billing_dataset.gcp_billing_export_v1_01F182_446702_47B35A' # Replace with your actual values
     steps:
       - uses: actions/checkout@v4
 
