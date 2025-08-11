@@ -1,0 +1,59 @@
+name: Automated GCP Cost Anomaly Report
+
+on:
+  schedule:
+    - cron: "0 06 * * *"   # daily at 06:00 UTC (edit to your preferred time)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write    # required if you want the workflow to create GitHub issues
+
+jobs:
+  detect-cost-anomalies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -------------------------
+      # AUTH OPTION A: Service Account JSON (easy)
+      # -------------------------
+      - name: Authenticate to GCP (service account key)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      # -------------------------
+      # AUTH OPTION B: Workload Identity (recommended for production)
+      # -------------------------
+      # - name: Authenticate to GCP (Workload Identity)
+      #   uses: google-github-actions/auth@v2
+      #   with:
+      #     workload_identity_provider: projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+      #     service_account: your-sa@your-project.iam.gserviceaccount.com
+      #
+      # Replace above with your workload identity resource and service account.
+      # See GCP docs for configuring GitHub OIDC -> Workload Identity.
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Run anomaly detection
+        env:
+          BILLING_TABLE: "REPLACE_ME_PROJECT.billing_dataset.gcp_billing_export"  # update
+          THRESHOLD_PERCENT: "30"
+          BASELINE_DAYS: "7"
+          MIN_ABSOLUTE_INCREASE: "5.0"
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          CREATE_GITHUB_ISSUE: "true"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python src/detect_cost_anomalies.py
