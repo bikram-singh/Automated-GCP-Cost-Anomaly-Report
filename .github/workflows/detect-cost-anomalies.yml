@@ -47,7 +47,7 @@ jobs:
 
       - name: Run anomaly detection
         env:
-          BILLING_TABLE: "REPLACE_ME_PROJECT.billing_dataset.gcp_billing_export"  # update
+          BILLING_TABLE: "my-billing-project.billing_dataset.gcp_billing_export_v1_01F182_446702_47B35A"  # update
           THRESHOLD_PERCENT: "30"
           BASELINE_DAYS: "7"
           MIN_ABSOLUTE_INCREASE: "5.0"
