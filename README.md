@@ -42,45 +42,55 @@ The Automated GCP Cost Anomaly Report is a serverless monitoring solution that:
 
 ```mermaid
 graph TB
-    subgraph "GCP Cloud"
-        A[GCP Services] -->|Generate Costs| B[GCP Billing]
-        B -->|Export Daily| C[BigQuery<br/>Billing Table]
+    subgraph "☁️ GCP Cloud Platform"
+        A["⚡ GCP Services<br/>(Compute, Storage, etc.)"] -->|Generate Costs| B["💰 GCP Billing"]
+        B -->|Export Daily| C["🗄️ BigQuery<br/>Billing Export Table"]
     end
     
-    subgraph "GitHub Actions"
-        D[Scheduled Cron<br/>Daily 06:00 UTC] -->|Trigger| E[GitHub Actions Workflow]
-        E -->|Authenticate| F[GCP Service Account]
-        F -->|Query| C
-        E -->|Execute| G[Python Script<br/>detect_cost_anomalies.py]
+    subgraph "🤖 GitHub Actions CI/CD"
+        D["⏰ Scheduled Cron<br/>⏲️ Daily at 06:00 UTC"] -->|Trigger| E["⚙️ GitHub Actions<br/>Workflow Runner"]
+        E -->|Authenticate| F["🔑 GCP Service Account<br/>JSON Key / Workload Identity"]
+        F -->|SQL Query| C
+        E -->|Execute Python| G["🐍 Python Script<br/>detect_cost_anomalies.py"]
     end
     
-    subgraph "Anomaly Detection Logic"
-        G -->|Fetch Data| H[Query Recent Costs<br/>Yesterday]
-        G -->|Fetch Data| I[Query Baseline Costs<br/>Past 7 Days]
-        H --> J[Compare & Analyze]
+    subgraph "🧮 Anomaly Detection Engine"
+        G -->|Fetch Yesterday| H["📊 Query Recent Costs<br/>Yesterday's Data"]
+        G -->|Fetch History| I["📈 Query Baseline Costs<br/>Past 7 Days Average"]
+        H --> J["🔍 Compare & Analyze<br/>Statistical Comparison"]
         I --> J
-        J -->|Calculate| K{Anomaly<br/>Detected?}
+        J -->|Calculate Variance| K{"🚨 Anomaly<br/>Detected?"}
     end
     
-    subgraph "Notification System"
-        K -->|Yes| L[Format Alert Message]
-        L --> M[Send to Slack<br/>Webhook]
-        L --> N[Create GitHub Issue<br/>with Details]
-        K -->|No| O[Log: No Anomalies<br/>End Job]
+    subgraph "📢 Notification System"
+        K -->|✅ Yes - Alert!| L["📝 Format Alert Message<br/>Service-wise Breakdown"]
+        L --> M["💬 Send to Slack<br/>via Webhook API"]
+        L --> N["📋 Create GitHub Issue<br/>via REST API"]
+        K -->|❌ No Issues| O["✓ Log: No Anomalies<br/>🎉 All Clear - End Job"]
     end
     
-    subgraph "Alert Destinations"
-        M --> P[Slack Channel]
-        N --> Q[GitHub Repository Issues]
+    subgraph "🔔 Alert Destinations"
+        M --> P["💜 Slack Channel<br/>#cloud-costs / #alerts"]
+        N --> Q["📌 GitHub Issues<br/>Repository Tracking"]
     end
     
-    style A fill:#4285F4
-    style C fill:#669DF6
-    style G fill:#FFA500
-    style K fill:#FF6B6B
-    style P fill:#611F69
-    style Q fill:#24292E
-    style J fill:#90EE90
+    style A fill:#4285F4,stroke:#1a73e8,stroke-width:3px,color:#fff
+    style B fill:#34A853,stroke:#0f9d58,stroke-width:3px,color:#fff
+    style C fill:#669DF6,stroke:#1a73e8,stroke-width:3px,color:#fff
+    style D fill:#2088FF,stroke:#1074d8,stroke-width:2px,color:#fff
+    style E fill:#2088FF,stroke:#1074d8,stroke-width:3px,color:#fff
+    style F fill:#FBBC04,stroke:#f9ab00,stroke-width:2px,color:#000
+    style G fill:#FFA500,stroke:#ff8c00,stroke-width:3px,color:#fff
+    style H fill:#87CEEB,stroke:#4682b4,stroke-width:2px
+    style I fill:#87CEEB,stroke:#4682b4,stroke-width:2px
+    style J fill:#90EE90,stroke:#32CD32,stroke-width:3px
+    style K fill:#FF6B6B,stroke:#dc143c,stroke-width:4px,color:#fff
+    style L fill:#FFD700,stroke:#ffa500,stroke-width:2px
+    style M fill:#DDA0DD,stroke:#9370db,stroke-width:2px
+    style N fill:#DDA0DD,stroke:#9370db,stroke-width:2px
+    style O fill:#98FB98,stroke:#32CD32,stroke-width:2px
+    style P fill:#611F69,stroke:#4a154b,stroke-width:3px,color:#fff
+    style Q fill:#24292E,stroke:#000,stroke-width:3px,color:#fff
 ```
 
 ### Architecture Flow
